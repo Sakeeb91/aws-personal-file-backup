@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Personal File Backup System
+  Event-driven backup pipeline using S3, Lambda, and SNS
+
+Parameters:
+  SourceBucketName:
+    Type: String
+    Description: Name for the source (inbox) bucket
+    AllowedPattern: ^[a-z0-9][a-z0-9-]*[a-z0-9]$
+    ConstraintDescription: Bucket name must be lowercase, alphanumeric, and hyphens only
+
+  BackupBucketName:
+    Type: String
+    Description: Name for the backup bucket
+    AllowedPattern: ^[a-z0-9][a-z0-9-]*[a-z0-9]$
+    ConstraintDescription: Bucket name must be lowercase, alphanumeric, and hyphens only
+
+  NotificationEmail:
+    Type: String
+    Description: Email address for backup notifications
+    AllowedPattern: ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$
+    ConstraintDescription: Must be a valid email address
+
+Globals:
+  Function:
+    Timeout: 60
+    Runtime: python3.9
+
+Resources:
+  # Source bucket - where users upload files
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref SourceBucketName
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # Backup bucket - where files are copied to
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BackupBucketName
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # SNS Topic for notifications
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${AWS::StackName}-backup-notifications"
+
+  # Email subscription
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref NotificationTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  # Lambda function for file backup
+  FileBackupFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-FileBackupHandler"
+      Handler: file_backup_handler.handler
+      Runtime: python3.9
+      CodeUri: src/lambda/
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          BACKUP_BUCKET: !Ref BackupBucketName
+          SNS_TOPIC_ARN: !Ref NotificationTopic
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref SourceBucketName
+        - S3CrudPolicy:
+            BucketName: !Ref BackupBucketName
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt NotificationTopic.TopicName
+      Events:
+        S3Event:
+          Type: S3
+          Properties:
+            Bucket: !Ref SourceBucket
+            Events: s3:ObjectCreated:*
+
+Outputs:
+  SourceBucketName:
+    Description: Source bucket for file uploads
+    Value: !Ref SourceBucket
+
+  BackupBucketName:
+    Description: Backup bucket for copied files
+    Value: !Ref BackupBucket
+
+  LambdaFunctionArn:
+    Description: Lambda function ARN
+    Value: !GetAtt FileBackupFunction.Arn
+
+  SNSTopicArn:
+    Description: SNS topic for notifications
+    Value: !Ref NotificationTopic
